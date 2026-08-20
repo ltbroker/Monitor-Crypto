@@ -1,0 +1,31 @@
+{
+  "name": "crypto-wallet-monitor",
+  "version": "1.0.0",
+  "description": "Bot de Telegram que monitorea depositos y retiros de USDT/USDC en wallets ERC20, Polygon, BSC y TRC20",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "crypto",
+    "usdt",
+    "usdc",
+    "erc20",
+    "trc20",
+    "bsc",
+    "polygon"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
