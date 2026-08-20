@@ -14,14 +14,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Para repartir la carga entre los nodos RPC publicos (y no golpear siempre al
-// mismo primero, que es lo que dispara los bloqueos por rate-limit 403), cada
-// llamada arranca por un nodo distinto (round-robin).
+// Si el primer nodo de la lista es una URL autenticada (tiene una API key propia,
+// ej. Ankr con ANKR_API_KEY), lo dejamos siempre primero porque tiene cuota
+// dedicada y es mucho mas confiable. El resto son nodos publicos compartidos de
+// respaldo: entre esos si rotamos cual se prueba primero en cada llamada, para
+// repartir la carga y no golpear siempre al mismo (lo que dispara bloqueos).
 let rpcRotationIndex = 0;
 function rotatedUrls(urls) {
-  const start = rpcRotationIndex % urls.length;
+  const isFirstAuthenticated = /\/[a-f0-9]{32,}$/i.test(urls[0] || '');
+  const pinned = isFirstAuthenticated ? [urls[0]] : [];
+  const rest = isFirstAuthenticated ? urls.slice(1) : urls;
+
+  if (rest.length === 0) return pinned;
+
+  const start = rpcRotationIndex % rest.length;
   rpcRotationIndex++;
-  return [...urls.slice(start), ...urls.slice(0, start)];
+  const rotatedRest = [...rest.slice(start), ...rest.slice(0, start)];
+  return [...pinned, ...rotatedRest];
 }
 
 /**

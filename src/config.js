@@ -64,6 +64,10 @@ const config = {
   // BscScan migro sus keys a este sistema unico, ya no hace falta una key separada.
   etherscanApiKey: required('ETHERSCAN_API_KEY'),
   tronGridApiKey: required('TRONGRID_API_KEY'),
+  // API key de Ankr (gratuita, con registro): da acceso RPC autenticado a BSC con
+  // cuota propia, en vez de depender de nodos publicos compartidos que suelen
+  // bloquear el trafico que viene de servidores en la nube (Railway, etc.).
+  ankrApiKey: process.env.ANKR_API_KEY || null,
   minAmountUsd: parseFloat(process.env.MIN_AMOUNT_USD || '10'),
   pollIntervalSeconds: parseInt(process.env.POLL_INTERVAL_SECONDS || '60', 10),
   // Cuando el bot arranca sin estado guardado (primera vez, o porque el hosting
@@ -108,11 +112,12 @@ const config = {
       chainId: 56,
       name: 'BNB Smart Chain (BEP20)',
       explorer: 'https://bscscan.com/tx/',
-      // Se consulta via RPC publico (eth_getLogs), no via Etherscan API - por eso
-      // no depende de ninguna API key ni de un plan pago. Se listan varios nodos
-      // para repartir la carga (rotamos cual se usa primero en cada llamada) y
-      // tener alternativas si alguno bloquea por rate-limit.
+      // Se consulta via RPC (eth_getLogs), no via Etherscan API - por eso no
+      // depende del plan de esa key. Si hay ANKR_API_KEY configurada, esa URL
+      // autenticada (cuota propia, no compartida) se prueba primero; el resto
+      // de nodos publicos quedan como respaldo si Ankr fallara por algun motivo.
       rpcUrls: [
+        ...(process.env.ANKR_API_KEY ? [`https://rpc.ankr.com/bsc/${process.env.ANKR_API_KEY}`] : []),
         'https://bsc-dataseed.binance.org/',
         'https://bsc-dataseed1.binance.org/',
         'https://bsc-dataseed2.binance.org/',
