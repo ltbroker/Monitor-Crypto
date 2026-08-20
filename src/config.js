@@ -10,8 +10,16 @@ function required(name) {
 
 /**
  * Parsea una lista de wallets desde una variable de entorno.
- * Formato: "direccion1,direccion2:Etiqueta,direccion3:Otra Etiqueta"
- * La etiqueta es opcional (si no se pone ":", queda sin etiqueta).
+ * Formato: "direccion[:Etiqueta][|flags]", separadas por coma.
+ *   - La etiqueta es opcional (va despues de ":").
+ *   - Los flags son opcionales (van despues de "|", separados por coma si hay mas de uno):
+ *       onlyin  -> solo notifica depositos (IN), ignora retiros (OUT)
+ *       onlyout -> solo notifica retiros (OUT), ignora depositos (IN)
+ * Ejemplos:
+ *   0xaaa...
+ *   0xaaa...:EXCHANGE LUIS
+ *   0xaaa...:EXCHANGE LUIS|onlyin
+ *   0xaaa...|onlyin  (sin etiqueta)
  */
 function parseWalletList(envValue, { lowercase = false } = {}) {
   if (!envValue) return [];
@@ -21,18 +29,28 @@ function parseWalletList(envValue, { lowercase = false } = {}) {
     .map((entry) => entry.trim())
     .filter(Boolean)
     .map((entry) => {
-      const separatorIndex = entry.indexOf(':');
-      let address = entry;
+      const [addressLabelPart, flagsPart] = entry.split('|');
+      const trimmedPart = addressLabelPart.trim();
+
+      const separatorIndex = trimmedPart.indexOf(':');
+      let address = trimmedPart;
       let label = null;
 
       if (separatorIndex !== -1) {
-        address = entry.slice(0, separatorIndex).trim();
-        label = entry.slice(separatorIndex + 1).trim() || null;
+        address = trimmedPart.slice(0, separatorIndex).trim();
+        label = trimmedPart.slice(separatorIndex + 1).trim() || null;
       }
+
+      const flags = (flagsPart || '')
+        .split(',')
+        .map((f) => f.trim().toLowerCase())
+        .filter(Boolean);
 
       return {
         address: lowercase ? address.toLowerCase() : address,
         label,
+        onlyIn: flags.includes('onlyin'),
+        onlyOut: flags.includes('onlyout'),
       };
     });
 }

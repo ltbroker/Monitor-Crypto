@@ -87,6 +87,8 @@ async function checkWallet(wallet, state) {
       const direction = to === walletAddress ? 'IN' : from === walletAddress ? 'OUT' : null;
 
       if (!direction) continue;
+      if (wallet.onlyIn && direction !== 'IN') continue;
+      if (wallet.onlyOut && direction !== 'OUT') continue;
 
       const message = formatTransferMessage({
         network: networkConfig.name,
