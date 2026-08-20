@@ -60,8 +60,26 @@ function addressToTopic(address) {
   return '0x' + '0'.repeat(24) + address.slice(2).toLowerCase();
 }
 
-async function getBlock(rpcUrls, blockNumber) {
-  return rpcCall(rpcUrls, 'eth_getBlockByNumber', ['0x' + blockNumber.toString(16), false]);
+/**
+ * Pide un bloque por numero. Si un nodo devuelve un resultado vacio (null) en vez
+ * de un error (le puede pasar a un nodo que todavia no sincronizo ese bloque),
+ * lo tratamos igual como fallo y probamos con otro nodo antes de rendirnos.
+ */
+async function getBlock(rpcUrls, blockNumber, { retries = 3 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const block = await rpcCall(rpcUrls, 'eth_getBlockByNumber', ['0x' + blockNumber.toString(16), false], {
+        retries: 0,
+      });
+      if (block && block.timestamp) return block;
+      lastError = new Error(`Bloque ${blockNumber} vacio/no encontrado`);
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < retries) await sleep(500 * (attempt + 1));
+  }
+  throw lastError;
 }
 
 /**
@@ -153,10 +171,38 @@ async function fetchTokenTransfersRpc({ rpcUrls, contractAddress, walletAddress,
   const walletTopic = addressToTopic(walletAddress);
 
   // El rango se pide en tandas para no exceder los limites de los RPC publicos.
-  // Un chunk mas grande = menos requests totales = menos chance de rate-limit.
-  const CHUNK_SIZE = 5000;
-  // Pequena pausa entre tandas para no golpear los nodos publicos en rafaga.
-  const DELAY_BETWEEN_CHUNKS_MS = 350;
+  const CHUNK_SIZE = 2000;
+  // Pausa entre tandas para no golpear los nodos publicos en rafaga.
+  const DELAY_BETWEEN_CHUNKS_MS = 500;
+  // Minimo al que estamos dispuestos a partir un rango si un nodo lo rechaza
+  // por "limit exceeded" (limite de rango de bloques del propio nodo).
+  const MIN_RANGE_SIZE = 250;
+
+  /**
+   * Pide eth_getLogs para un rango de bloques. Si el nodo lo rechaza por ser
+   * demasiado ancho (ej. "limit exceeded"), partimos el rango en dos mitades y
+   * reintentamos cada una por separado, en vez de descartar toda la tanda.
+   */
+  async function fetchLogsAdaptive(topics, rangeStart, rangeEnd) {
+    const fromHex = '0x' + rangeStart.toString(16);
+    const toHex = '0x' + rangeEnd.toString(16);
+    try {
+      return await rpcCall(rpcUrls, 'eth_getLogs', [
+        { address: contractAddress, topics, fromBlock: fromHex, toBlock: toHex },
+      ]);
+    } catch (err) {
+      const rangeSize = rangeEnd - rangeStart + 1;
+      if (rangeSize <= MIN_RANGE_SIZE) throw err;
+
+      const mid = rangeStart + Math.floor(rangeSize / 2) - 1;
+      await sleep(DELAY_BETWEEN_CHUNKS_MS);
+      const firstHalf = await fetchLogsAdaptive(topics, rangeStart, mid);
+      await sleep(DELAY_BETWEEN_CHUNKS_MS);
+      const secondHalf = await fetchLogsAdaptive(topics, mid + 1, rangeEnd);
+      return [...firstHalf, ...secondHalf];
+    }
+  }
+
   const allLogs = [];
   // Para cada log guardamos los limites (chunkStart/chunkEnd) del chunk del que
   // salio, y despues interpolamos el timestamp entre esos dos limites en vez de
@@ -168,31 +214,33 @@ async function fetchTokenTransfersRpc({ rpcUrls, contractAddress, walletAddress,
     isFirstChunk = false;
 
     const chunkEnd = Math.min(chunkStart + CHUNK_SIZE - 1, latestBlock);
-    const fromHex = '0x' + chunkStart.toString(16);
-    const toHex = '0x' + chunkEnd.toString(16);
 
     // Dos consultas secuenciales (no en paralelo, para no duplicar la rafaga de
     // requests): una por "de esta wallet" (topic[1]) y otra por "hacia esta
     // wallet" (topic[2]).
-    const outgoingLogs = await rpcCall(rpcUrls, 'eth_getLogs', [
-      { address: contractAddress, topics: [TRANSFER_TOPIC, walletTopic, null], fromBlock: fromHex, toBlock: toHex },
-    ]);
+    const outgoingLogs = await fetchLogsAdaptive([TRANSFER_TOPIC, walletTopic, null], chunkStart, chunkEnd);
     await sleep(DELAY_BETWEEN_CHUNKS_MS);
-    const incomingLogs = await rpcCall(rpcUrls, 'eth_getLogs', [
-      { address: contractAddress, topics: [TRANSFER_TOPIC, null, walletTopic], fromBlock: fromHex, toBlock: toHex },
-    ]);
+    const incomingLogs = await fetchLogsAdaptive([TRANSFER_TOPIC, null, walletTopic], chunkStart, chunkEnd);
 
     const chunkLogs = [...outgoingLogs, ...incomingLogs];
     allLogs.push(...chunkLogs.map((log) => ({ log, chunkStart, chunkEnd })));
   }
 
   // Solo pedimos el timestamp real de los limites de los chunks que SI tuvieron
-  // logs (en vez de uno por log), y despues interpolamos linealmente.
+  // logs (en vez de uno por log), y despues interpolamos linealmente. Si un nodo
+  // falla en darnos ese bloque, no abortamos toda la corrida: usamos "ahora" como
+  // ultimo recurso, para no perder la notificacion por un dato de fecha aproximado.
   const boundsTimestampCache = new Map();
   async function getBoundTimestamp(blockNumber) {
     if (boundsTimestampCache.has(blockNumber)) return boundsTimestampCache.get(blockNumber);
-    const block = await getBlock(rpcUrls, blockNumber);
-    const ts = parseInt(block.timestamp, 16);
+    let ts;
+    try {
+      const block = await getBlock(rpcUrls, blockNumber);
+      ts = parseInt(block.timestamp, 16);
+    } catch (err) {
+      console.warn(`[EVM] No se pudo obtener el timestamp del bloque ${blockNumber}, uso la hora actual como aproximacion:`, err.message);
+      ts = Math.floor(Date.now() / 1000);
+    }
     boundsTimestampCache.set(blockNumber, ts);
     return ts;
   }
