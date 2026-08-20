@@ -109,12 +109,20 @@ const config = {
       name: 'BNB Smart Chain (BEP20)',
       explorer: 'https://bscscan.com/tx/',
       // Se consulta via RPC publico (eth_getLogs), no via Etherscan API - por eso
-      // no depende de ninguna API key ni de un plan pago.
+      // no depende de ninguna API key ni de un plan pago. Se listan varios nodos
+      // para repartir la carga (rotamos cual se usa primero en cada llamada) y
+      // tener alternativas si alguno bloquea por rate-limit.
       rpcUrls: [
         'https://bsc-dataseed.binance.org/',
+        'https://bsc-dataseed1.binance.org/',
+        'https://bsc-dataseed2.binance.org/',
+        'https://bsc-dataseed3.binance.org/',
+        'https://bsc-dataseed4.binance.org/',
         'https://bsc-dataseed1.defibit.io/',
+        'https://bsc-dataseed2.defibit.io/',
         'https://bsc-dataseed1.ninicoin.io/',
         'https://bsc.publicnode.com',
+        'https://rpc.ankr.com/bsc',
       ],
       contracts: {
         // Los tokens "Binance-Peg" en BSC usan 18 decimales (no 6, a diferencia de Ethereum).
