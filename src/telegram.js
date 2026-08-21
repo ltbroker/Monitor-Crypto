@@ -4,20 +4,24 @@ const config = require('./config');
 const API_URL = `https://api.telegram.org/bot${config.telegram.botToken}`;
 
 /**
- * Envia un mensaje de texto al chat configurado.
+ * Envia un mensaje de texto a TODOS los chats configurados (tu chat personal,
+ * un grupo con tus secretarias, etc. - ver TELEGRAM_CHAT_ID). Si el envio a un
+ * chat falla, no interrumpe el envio al resto.
  * @param {string} text - Texto en formato Markdown (HTML tambien soportado).
  */
 async function sendMessage(text) {
-  try {
-    await axios.post(`${API_URL}/sendMessage`, {
-      chat_id: config.telegram.chatId,
-      text,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    });
-  } catch (err) {
-    const detail = err.response?.data || err.message;
-    console.error('[TELEGRAM] Error enviando mensaje:', detail);
+  for (const chatId of config.telegram.chatIds) {
+    try {
+      await axios.post(`${API_URL}/sendMessage`, {
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      });
+    } catch (err) {
+      const detail = err.response?.data || err.message;
+      console.error(`[TELEGRAM] Error enviando mensaje al chat ${chatId}:`, detail);
+    }
   }
 }
 

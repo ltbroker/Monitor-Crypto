@@ -55,10 +55,19 @@ function parseWalletList(envValue, { lowercase = false } = {}) {
     });
 }
 
+const rawChatId = required('TELEGRAM_CHAT_ID');
+// TELEGRAM_CHAT_ID admite uno o varios destinos separados por coma (tu chat
+// personal, un grupo, etc.). Los IDs de grupo son numeros negativos (ej.
+// "-1001234567890"), eso es normal.
+const chatIds = (rawChatId || '')
+  .split(',')
+  .map((id) => id.trim())
+  .filter(Boolean);
+
 const config = {
   telegram: {
     botToken: required('TELEGRAM_BOT_TOKEN'),
-    chatId: required('TELEGRAM_CHAT_ID'),
+    chatIds,
   },
   // Una sola API key de Etherscan (API v2) sirve para Ethereum, Polygon y BSC.
   // BscScan migro sus keys a este sistema unico, ya no hace falta una key separada.
