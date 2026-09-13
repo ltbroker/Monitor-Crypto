@@ -14,6 +14,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Corre una promesa con un limite de tiempo total. Si no termina a tiempo, se
+ * descarta (no se cancela la request de red en curso, pero dejamos de esperarla)
+ * y se rechaza con un error de timeout. Esto es una salvaguarda para que ninguna
+ * red (en particular BSC, que depende de RPCs externos con reintentos propios)
+ * pueda trabar el ciclo completo por mucho tiempo, ya que eso tambien retrasaba
+ * la revision de TRON y de las demas wallets.
+ */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timeout (${ms}ms) esperando ${label}`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // Si el primer nodo de la lista es una URL autenticada (tiene una API key propia,
 // ej. Ankr con ANKR_API_KEY), lo dejamos siempre primero porque tiene cuota
 // dedicada y es mucho mas confiable. El resto son nodos publicos compartidos de
@@ -37,7 +53,7 @@ function rotatedUrls(urls) {
  * Llama a un nodo RPC JSON-RPC publico, probando varios endpoints por si alguno falla,
  * con reintentos y backoff si todos fallan (util contra bloqueos temporales 403/429).
  */
-async function rpcCall(urls, method, params, { retries = 2 } = {}) {
+async function rpcCall(urls, method, params, { retries = 1 } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const orderedUrls = rotatedUrls(urls);
@@ -46,7 +62,7 @@ async function rpcCall(urls, method, params, { retries = 2 } = {}) {
         const { data } = await axios.post(
           url,
           { jsonrpc: '2.0', id: 1, method, params },
-          { timeout: 15000 }
+          { timeout: 6000 }
         );
         if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
         return data.result;
@@ -55,7 +71,7 @@ async function rpcCall(urls, method, params, { retries = 2 } = {}) {
       }
     }
     if (attempt < retries) {
-      await sleep(800 * (attempt + 1));
+      await sleep(500 * (attempt + 1));
     }
   }
   throw lastError;
@@ -91,8 +107,26 @@ async function getBlock(rpcUrls, blockNumber, { retries = 3 } = {}) {
   throw lastError;
 }
 
+// El plan gratuito de Etherscan permite ~3 consultas por segundo, compartido
+// entre TODAS las chains (erc20/polygon/bsc usan la misma key). Si las llamadas
+// salen muy seguidas (tipico en una conexion rapida/local, como una Raspberry
+// Pi en tu casa en vez de un servidor en la nube con mas latencia natural),
+// se puede pisar ese limite. Este throttle simple espacia las llamadas para
+// quedar comodo por debajo de 3/seg (una cada ~400ms).
+let lastEtherscanCallAt = 0;
+async function throttleEtherscan() {
+  const minGapMs = 400;
+  const elapsed = Date.now() - lastEtherscanCallAt;
+  if (elapsed < minGapMs) await sleep(minGapMs - elapsed);
+  lastEtherscanCallAt = Date.now();
+}
+
 /**
  * Consulta transferencias de un token via Etherscan API v2 (Ethereum / Polygon).
+ * Reintenta ante avisos transitorios (ej. rate limit) en vez de darlos por
+ * "revisados sin movimientos" - eso es importante porque en la primera corrida
+ * (backfill) un aviso asi haria que el bot piense que ya reviso todo el
+ * historial y avance el cursor, perdiendo para siempre esos movimientos.
  */
 async function fetchTokenTransfersEtherscan({ networkKey, chainId, contractAddress, walletAddress, startBlock }) {
   const params = {
@@ -107,11 +141,25 @@ async function fetchTokenTransfersEtherscan({ networkKey, chainId, contractAddre
     apikey: config.etherscanApiKey,
   };
 
-  const { data } = await axios.get(ETHERSCAN_V2_URL, { params, timeout: 20000 });
+  let data;
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await throttleEtherscan();
+    const response = await axios.get(ETHERSCAN_V2_URL, { params, timeout: 20000 });
+    data = response.data;
 
-  if (data.status === '0' && data.message !== 'No transactions found') {
-    console.warn(`[EVM] Aviso (${networkKey}):`, data.result || data.message);
-    return { transfers: [], latestBlock: startBlock || 0 };
+    if (data.status === '0' && data.message !== 'No transactions found') {
+      const detail = data.result || data.message;
+      if (attempt < maxAttempts) {
+        console.warn(`[EVM] Aviso (${networkKey}), reintentando (${attempt}/${maxAttempts}):`, detail);
+        await sleep(1000 * attempt);
+        continue;
+      }
+      // Se acabaron los reintentos: propagamos el error para que quien llama
+      // NO marque esta wallet/token como revisada (evita perder historial).
+      throw new Error(`Etherscan (${networkKey}) no respondio bien tras ${maxAttempts} intentos: ${detail}`);
+    }
+    break;
   }
 
   const rawTransfers = Array.isArray(data.result) ? data.result : [];
@@ -313,13 +361,20 @@ async function checkWallet(networkKey, wallet, state) {
 
     try {
       if (isBsc) {
-        const result = await fetchTokenTransfersRpc({
-          rpcUrls: networkConfig.rpcUrls,
-          contractAddress,
-          walletAddress,
-          startBlock: lastBlock,
-          isFirstRun,
-        });
+        // Limite duro de tiempo: si BSC se traba (RPCs externos lentos/caidos),
+        // esto se corta solo despues de este limite en vez de bloquear el resto
+        // del ciclo (otras wallets, otros tokens, y TRON) indefinidamente.
+        const result = await withTimeout(
+          fetchTokenTransfersRpc({
+            rpcUrls: networkConfig.rpcUrls,
+            contractAddress,
+            walletAddress,
+            startBlock: lastBlock,
+            isFirstRun,
+          }),
+          45000,
+          `BSC ${tokenSymbol} ${walletAddress}`
+        );
         transfers = result.transfers;
         latestBlock = result.latestBlock;
       } else {
